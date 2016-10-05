@@ -1,0 +1,113 @@
+buildscript {
+    repositories {
+        maven {
+            url 'https://plugins.gradle.org/m2/'
+        }
+    }
+    dependencies {
+        classpath 'org.jfrog.buildinfo:build-info-extractor-gradle:4.0.0'
+        classpath 'org.sonarsource.scanner.gradle:sonarqube-gradle-plugin:2.1'
+    }
+}
+
+apply plugin: 'java'
+apply plugin: 'application'
+apply plugin: 'maven'
+apply plugin: 'jacoco'
+apply plugin: 'maven-publish'
+apply plugin: 'com.jfrog.artifactory'
+apply plugin: 'org.sonarqube'
+
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
+
+group = 'org.sample'
+version = "${currentVersion}-${currentBuild}"
+
+mainClassName = "org.sample.App"
+
+repositories {
+	mavenCentral()
+    mavenLocal()
+    maven { url "${artifactoryUrl}/artifactory/libs-release-local" }
+    maven { url "${artifactoryUrl}/artifactory/libs-snapshot-local" }
+}
+
+dependencies {
+	compile 'com.sparkjava:spark-core:2.2'
+	compile 'com.google.code.gson:gson:2.3.1'
+	compile 'org.apache.logging.log4j:log4j-api:2.6.2'
+	compile 'org.apache.logging.log4j:log4j-core:2.6.2'
+
+	testCompile ('junit:junit:4.12') { transitive false }
+	testCompile ('org.hamcrest:java-hamcrest:2.0.0.0') { transitive false }
+	testCompile "org.mockito:mockito-core:1.+"
+}
+
+test {
+	testLogging {
+		events "passed", "skipped", "failed", "standardOut", "standardError"
+		afterSuite { desc, result ->
+			if (!desc.parent) {
+				println "Results: ${result.resultType} (Total: ${result.testCount}, Passed: ${result.successfulTestCount}, Failed: ${result.failedTestCount}, Skipped: ${result.skippedTestCount})"
+			}
+		}
+	}
+	jacoco {
+        append = false
+        destinationFile = file("$buildDir/jacoco/jacocoTest.exec")
+        classDumpFile = file("$buildDir/jacoco/classpathdumps")
+    }
+}
+
+artifactory {
+    contextUrl = "${artifactoryUrl}/artifactory"
+    publish {
+        repository {
+            repoKey = project.version.endsWith('-SNAPSHOT') ? 'libs-snapshot-local' : 'libs-release-local'
+            username = "${artifactoryUser}"
+            password = "${artifactoryPassword}"
+            maven = true
+        }       
+        defaults {
+            publications ('mavenJava')
+        }
+    }
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+
+            pom.withXml {
+                Map resolvedVersionMap = [:]
+                Set<ResolvedArtifact> resolvedArtifacts = configurations.compile.getResolvedConfiguration().getResolvedArtifacts()
+                resolvedArtifacts.addAll(configurations.testCompile.getResolvedConfiguration().getResolvedArtifacts())
+                resolvedArtifacts.each {
+                    ModuleVersionIdentifier mvi = it.getModuleVersion().getId();
+                    resolvedVersionMap.put("${mvi.getGroup()}:${mvi.getName()}", mvi.getVersion())
+                }
+                asNode().dependencies.first().each {
+                    def groupId = it.get("groupId").first().value().first()
+                    def artifactId = it.get("artifactId").first().value().first()
+                    it.get("version").first().value = resolvedVersionMap.get("${groupId}:${artifactId}")
+                }
+            }
+        }
+    }
+}
+
+configurations.all {
+    resolutionStrategy.cacheDynamicVersionsFor 1, 'seconds'
+}
+
+sonarqube {
+    properties {
+        property "sonar.projectVersion", "${version}"
+    }
+}
+
+task wrapper(type: Wrapper) {
+	gradleVersion = '3.1'
+}
